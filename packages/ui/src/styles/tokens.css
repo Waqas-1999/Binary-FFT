@@ -1,0 +1,94 @@
+/*
+ * Theme values: the single place where colors are defined.
+ * Components only use semantic tokens (bg-surface, text-brand, ...), never these raw values.
+ * To re-brand, change the --palette-brand-* values below.
+ */
+
+:root {
+  /* Brand palette (Deep Teal). */
+  --palette-brand-strong: #115e59;
+  --palette-brand: #0f766e;
+  --palette-brand-accent: #14b8a6;
+
+  /* Elevation shadows are tuned per theme; radius, type and motion are theme-independent. */
+  color-scheme: light;
+}
+
+/* Light theme (also the fallback before the theme script runs). */
+:root,
+[data-theme="light"] {
+  --background: #f8fafc;
+  --surface: #ffffff;
+  --surface-elevated: #ffffff;
+  --surface-muted: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #8a97ab;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+
+  --brand: var(--palette-brand);
+  --brand-hover: var(--palette-brand-strong);
+  --brand-active: color-mix(in oklab, var(--palette-brand-strong) 85%, black);
+  --brand-soft: color-mix(in oklab, var(--palette-brand-accent) 14%, var(--surface));
+  --brand-soft-text: var(--palette-brand-strong);
+  --brand-contrast: #ffffff;
+
+  /* Status fills, icons and indicators. */
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --info: #0284c7;
+  /* Status text: darker variants that meet WCAG AA on surfaces and status tints. */
+  --success-text: #14713a;
+  --danger-text: #b91c1c;
+  --warning-text: #a44a08;
+  --info-text: #0369a1;
+  /* Solid destructive button. */
+  --danger-solid: #dc2626;
+  --danger-contrast: #ffffff;
+
+  --shadow-raised: 0 1px 2px rgb(15 23 42 / 0.06), 0 1px 3px rgb(15 23 42 / 0.04);
+  --shadow-overlay: 0 12px 32px -8px rgb(15 23 42 / 0.18), 0 2px 6px rgb(15 23 42 / 0.06);
+  --scrim: rgb(15 23 42 / 0.4);
+
+  color-scheme: light;
+}
+
+/* Dark theme: the primary trading experience. */
+[data-theme="dark"] {
+  --background: #0b0f14;
+  --surface: #111820;
+  --surface-elevated: #17212b;
+  --surface-muted: #1a2530;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #6b7a8f;
+  --border: #263340;
+  --border-strong: #36475a;
+
+  --brand: var(--palette-brand-accent);
+  --brand-hover: color-mix(in oklab, var(--palette-brand-accent) 85%, white);
+  --brand-active: color-mix(in oklab, var(--palette-brand-accent) 85%, black);
+  --brand-soft: color-mix(in oklab, var(--palette-brand-accent) 14%, var(--surface));
+  --brand-soft-text: color-mix(in oklab, var(--palette-brand-accent) 70%, white);
+  /* Dark text on the bright accent keeps contrast above WCAG AA. */
+  --brand-contrast: #04201d;
+
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --info: #38bdf8;
+  --success-text: #22c55e;
+  --danger-text: #f87171;
+  --warning-text: #f59e0b;
+  --info-text: #38bdf8;
+  --danger-solid: #dc2626;
+  --danger-contrast: #ffffff;
+
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-overlay: 0 16px 40px -8px rgb(0 0 0 / 0.6), 0 0 0 1px rgb(255 255 255 / 0.04);
+  --scrim: rgb(0 0 0 / 0.6);
+
+  color-scheme: dark;
+}

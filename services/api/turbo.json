@@ -1,0 +1,18 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build", "//#db:generate"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build", "//#db:generate"]
+    },
+    "test": {
+      "dependsOn": ["^build", "//#db:generate"]
+    },
+    "dev": {
+      "dependsOn": ["^build", "//#db:generate"]
+    }
+  }
+}

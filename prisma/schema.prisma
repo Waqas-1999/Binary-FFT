@@ -1,0 +1,12 @@
+// Phase 0: connection only. Models are added in later phases, each with a migration.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../services/api/src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
