@@ -12,8 +12,10 @@
   },
   "dependencies": {
     "@repo/config": "workspace:*",
+    "@repo/types": "workspace:*",
     "@repo/ui": "workspace:*",
     "@repo/utils": "workspace:*",
+    "@repo/validation": "workspace:*",
     "lucide-react": "catalog:",
     "next": "catalog:",
     "react": "catalog:",

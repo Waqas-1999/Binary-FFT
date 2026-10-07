@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "nest build",
-    "dev": "nest start --watch --exec \"node --env-file-if-exists=../../.env\"",
-    "start": "node --env-file-if-exists=../../.env dist/main.js",
+    "dev": "nest start --watch --exec \"node --use-system-ca --env-file-if-exists=../../.env\"",
+    "start": "node --use-system-ca --env-file-if-exists=../../.env dist/main.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -14,6 +14,7 @@
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
+    "@node-rs/argon2": "catalog:",
     "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "@repo/config": "workspace:*",
@@ -21,13 +22,16 @@
     "@repo/utils": "workspace:*",
     "@repo/validation": "workspace:*",
     "ioredis": "catalog:",
+    "nodemailer": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:"
   },
   "devDependencies": {
     "@nestjs/cli": "catalog:",
+    "@nestjs/testing": "catalog:",
     "@types/express": "catalog:",
     "@types/node": "catalog:",
+    "@types/nodemailer": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

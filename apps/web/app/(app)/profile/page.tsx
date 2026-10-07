@@ -1,6 +1,7 @@
 import { Card, Container, EmptyState, PageHeader, Tabs, ThemeSelector } from "@repo/ui";
-import { Bell, ShieldCheck, UserRound } from "lucide-react";
+import { Bell, ShieldCheck } from "lucide-react";
 import type { Metadata } from "next";
+import { AccountDetails } from "../../../components/account-details";
 
 export const metadata: Metadata = { title: "Profile" };
 
@@ -16,11 +17,7 @@ export default function ProfilePage() {
             label: "Profile",
             content: (
               <Card>
-                <EmptyState
-                  icon={<UserRound />}
-                  title="Account details"
-                  description="Your name and contact details will appear here once sign-in is available."
-                />
+                <AccountDetails />
               </Card>
             ),
           },

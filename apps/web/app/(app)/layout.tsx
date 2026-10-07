@@ -1,5 +1,6 @@
 import { Container, OfflineBanner, ToastProvider } from "@repo/ui";
 import type { ReactNode } from "react";
+import { AccountMenu } from "../../components/account-menu";
 import { BottomNav, TopNav } from "../../components/app-nav";
 import { BrandLogo } from "../../components/brand-logo";
 import { appRoutes } from "../../lib/routes";
@@ -13,7 +14,10 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           <OfflineBanner />
           <Container className="flex h-14 items-center justify-between gap-4 md:h-16">
             <BrandLogo href={appRoutes.trade} />
-            <TopNav />
+            <div className="flex items-center gap-2 md:gap-4">
+              <TopNav />
+              <AccountMenu />
+            </div>
           </Container>
         </header>
         {/* Bottom padding keeps content clear of the fixed mobile navigation. */}
