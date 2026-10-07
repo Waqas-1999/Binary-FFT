@@ -20,6 +20,8 @@ export const authConfig = {
 
   verificationToken: { ttlSeconds: 24 * HOUR },
 
+  passwordResetToken: { ttlSeconds: HOUR },
+
   /** Short-lived, single-use OAuth state stored server-side (Redis-backed). 60-minute TTL. */
   oAuthStateTtlSeconds: 60 * MINUTE,
 
@@ -45,11 +47,6 @@ export const authConfig = {
     googleLinkPerUser: { limit: 3, windowSeconds: HOUR },
   } satisfies Record<string, RateLimit>,
 } as const;
-
-/** Production cookies use the __Host- prefix: Secure, Path=/, no Domain, so subdomains can't override them. */
-export function sessionCookieName(isProduction: boolean): string {
-  return isProduction ? "__Host-session" : "session";
-}
 
 /** Production cookies use the __Host- prefix: Secure, Path=/, no Domain, so subdomains can't override them. */
 export function sessionCookieName(isProduction: boolean): string {

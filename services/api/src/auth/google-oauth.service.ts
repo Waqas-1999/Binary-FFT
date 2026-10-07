@@ -1,21 +1,16 @@
-import { HttpStatus, Injectable, Logger } from "@nestjs/common";
-import { ConfigType, registerAs } from "@nestjs/config";
+import { HttpStatus, Inject, Injectable, Logger } from "@nestjs/common";
+import type { GoogleOAuthConfig, ServerConfig } from "@repo/config/server";
+import type { AuthUser } from "@repo/types";
+import { ApiError } from "../common/api-error.ts";
+import type { ClientInfo } from "../common/client-info.ts";
+import { SERVER_CONFIG } from "../config/config.module.ts";
 import { PrismaService } from "../database/prisma.service.ts";
 import { EmailService } from "../email/email.service.ts";
 import { SessionService } from "./session.service.ts";
 import { AuthEventsService } from "./auth-events.service.ts";
 import { OAuthStateService } from "./oauth/oauth-state.service.ts";
-import { ApiError } from "../common/api-error.ts";
+import { Prisma } from "../generated/prisma/client.js";
 import { exchangeCodeForTokens, validateGoogleIdToken } from "./oauth/google-id-token.validator.ts";
-import { SERVER_CONFIG } from "../config/config.module.ts";
-
-export const googleOAuthConfig = registerAs("googleOAuth", () => ({
-  clientId: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  redirectUri: process.env.GOOGLE_REDIRECT_URI,
-}));
-
-type GoogleOAuthConfig = ConfigType<typeof googleOAuthConfig>;
 
 export interface GoogleIdentity {
   sub: string;
@@ -27,7 +22,7 @@ export interface GoogleIdentity {
 @Injectable()
 export class GoogleOAuthService {
   private readonly logger = new Logger(GoogleOAuthService.name);
-  private readonly redirectUri: string;
+  private readonly google: GoogleOAuthConfig | undefined;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -36,12 +31,21 @@ export class GoogleOAuthService {
     private readonly events: AuthEventsService,
     private readonly oAuthState: OAuthStateService,
     @Inject(SERVER_CONFIG) config: ServerConfig,
-    @Inject(googleOAuthConfig.KEY) private readonly cfg: GoogleOAuthConfig,
   ) {
-    if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) {
-      this.logger.warn("Google OAuth is not fully configured");
+    this.google = config.google;
+    if (!this.google) this.logger.warn("Google OAuth is not configured");
+  }
+
+  /** The configured Google client, or a 503 when Google sign-in is not set up on this server. */
+  private requireGoogle(): GoogleOAuthConfig {
+    if (!this.google) {
+      throw new ApiError(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        "SERVICE_UNAVAILABLE",
+        "Google OAuth is not configured on the server",
+      );
     }
-    this.redirectUri = cfg.redirectUri ?? "";
+    return this.google;
   }
 
   /** Initiates the Google OAuth login flow. Returns the state to pass to Google. */
@@ -52,29 +56,22 @@ export class GoogleOAuthService {
   }
 
   /** Handles the Google OAuth callback for login or account creation. */
-  async handleLoginCallback(state: string, code: string, client: any): Promise<{ user: AuthUser; sessionToken: string; sessionExpiresAt: Date }> {
-    let consumed: { type: string; userId: string | null };
+  async handleLoginCallback(state: string, code: string, client: ClientInfo): Promise<{ user: AuthUser; sessionToken: string; sessionExpiresAt: Date }> {
     try {
-      consumed = await this.oAuthState.consume(state, "login", undefined);
+      await this.oAuthState.consume(state, "login", undefined);
     } catch {
       throw new ApiError(HttpStatus.BAD_REQUEST, "OAUTH_STATE_INVALID", "Invalid or expired OAuth state");
     }
 
-    if (!this.cfg.clientId || !this.cfg.clientSecret) {
-      throw new ApiError(
-        HttpStatus.SERVICE_UNAVAILABLE,
-        "SERVICE_UNAVAILABLE",
-        "Google OAuth is not configured on the server",
-      );
-    }
+    const google = this.requireGoogle();
 
     let tokens: { idToken: string; accessToken?: string };
     try {
       tokens = await exchangeCodeForTokens(
         code,
-        this.cfg.clientId,
-        this.cfg.clientSecret,
-        this.redirectUri,
+        google.clientId,
+        google.clientSecret,
+        google.redirectUri,
       );
     } catch {
       throw new ApiError(
@@ -86,7 +83,7 @@ export class GoogleOAuthService {
 
     let googleIdentity: GoogleIdentity;
     try {
-      googleIdentity = await validateGoogleIdToken(tokens.idToken, this.cfg.clientId);
+      googleIdentity = await validateGoogleIdToken(tokens.idToken, google.clientId);
     } catch {
       throw new ApiError(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid Google identity token");
     }
@@ -107,9 +104,9 @@ export class GoogleOAuthService {
       }
 
       // Sign in the existing user
-      const session = await this.sessions.create(existingIdentity.userId, { ip: client?.ip, ua: client?.userAgent });
+      const session = await this.sessions.create(existingIdentity.userId, client);
       await this.events.record("GOOGLE_LOGIN_SUCCESS", {
-        userId: existingIdentity.user.userId,
+        userId: existingIdentity.userId,
         sessionId: session.sessionId,
         client,
         metadata: { method: "google" },
@@ -147,7 +144,7 @@ export class GoogleOAuthService {
     try {
       created = await this.prisma.$transaction(async (tx) => {
         const user = await tx.user.create({ data: {}, select: { id: true, userNumber: true } });
-        const oAuthIdentity = await tx.oAuthIdentity.create({
+        await tx.oAuthIdentity.create({
           data: { userId: user.id, provider: "GOOGLE", providerSubject: sub, emailAtLinkTime: email },
           select: { id: true },
         });
@@ -162,9 +159,9 @@ export class GoogleOAuthService {
           select: { userId: true, user: { select: { userNumber: true, status: true, emailAccount: { select: { email: true, emailVerifiedAt: true } } } } },
         });
         if (retryIdentity) {
-          const session = await this.sessions.create(retryIdentity.userId, { ip: client?.ip, ua: client?.userAgent });
+          const session = await this.sessions.create(retryIdentity.userId, client);
           await this.events.record("GOOGLE_LOGIN_SUCCESS", {
-            userId: retryIdentity.user.userId,
+            userId: retryIdentity.userId,
             sessionId: session.sessionId,
             client,
             metadata: { method: "google" },
@@ -185,7 +182,7 @@ export class GoogleOAuthService {
     }
 
     // Create session for the new user
-    const session = await this.sessions.create(created.userId, { ip: client?.ip, ua: client?.userAgent });
+    const session = await this.sessions.create(created.userId, client);
     await this.events.record("GOOGLE_LOGIN_SUCCESS", {
       userId: created.userId,
       sessionId: session.sessionId,
@@ -224,7 +221,7 @@ export class GoogleOAuthService {
     state: string,
     code: string,
     userId: string,
-    client: any,
+    client: ClientInfo,
   ): Promise<{ success: boolean; message: string }> {
     let consumed: { type: string; userId: string | null };
     try {
@@ -237,21 +234,15 @@ export class GoogleOAuthService {
       throw new ApiError(HttpStatus.FORBIDDEN, "OAUTH_LINK_REJECTED", "OAuth state does not match authenticated user");
     }
 
-    if (!this.cfg.clientId || !this.cfg.clientSecret) {
-      throw new ApiError(
-        HttpStatus.SERVICE_UNAVAILABLE,
-        "SERVICE_UNAVAILABLE",
-        "Google OAuth is not configured on the server",
-      );
-    }
+    const google = this.requireGoogle();
 
     let tokens: { idToken: string; accessToken?: string };
     try {
       tokens = await exchangeCodeForTokens(
         code,
-        this.cfg.clientId,
-        this.cfg.clientSecret,
-        this.redirectUri,
+        google.clientId,
+        google.clientSecret,
+        google.redirectUri,
       );
     } catch {
       throw new ApiError(
@@ -263,12 +254,12 @@ export class GoogleOAuthService {
 
     let googleIdentity: GoogleIdentity;
     try {
-      googleIdentity = await validateGoogleIdToken(tokens.idToken, this.cfg.clientId);
+      googleIdentity = await validateGoogleIdToken(tokens.idToken, google.clientId);
     } catch {
       throw new ApiError(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid Google identity token");
     }
 
-    const { sub, email, emailVerified } = googleIdentity;
+    const { sub, email } = googleIdentity;
 
     // Check if the Google identity is already linked to another user
     const identityBelongsToAnother = await this.prisma.oAuthIdentity.findFirst({
@@ -280,6 +271,7 @@ export class GoogleOAuthService {
       // Identity already linked to a different user - reject
       await this.events.record("GOOGLE_LINK_CONFLICT", {
         userId,
+        client,
         metadata: { reason: "identity_already_linked", subject: sub.slice(0, 8) },
       });
       throw new ApiError(
@@ -297,17 +289,17 @@ export class GoogleOAuthService {
 
     if (existingLink) {
       // User already has Google linked - this is a success (already linked)
-      await this.events.record("GOOGLE_LINK_SUCCESS", { userId });
+      await this.events.record("GOOGLE_LINK_SUCCESS", { userId, client });
       return { success: true, message: "Google account already linked to this profile." };
     }
 
     // Attach the OAuth identity to the authenticated user
-    await this.prisma.oAuthIdentity.update({
-      where: { userId },
-      data: { providerSubject: sub, emailAtLinkTime: email },
+    await this.prisma.oAuthIdentity.create({
+      data: { userId, provider: "GOOGLE", providerSubject: sub, emailAtLinkTime: email },
+      select: { id: true },
     });
 
-    await this.events.record("GOOGLE_LINK_SUCCESS", { userId });
+    await this.events.record("GOOGLE_LINK_SUCCESS", { userId, client });
     return { success: true, message: "Google account successfully linked to your profile." };
   }
 }

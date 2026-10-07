@@ -103,7 +103,7 @@ export class AuthService {
       data: { usedAt: now },
     });
     if (claimed.count !== 1) {
-      throw new Error("VERIFICATION_LINK_INVALID");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "VERIFICATION_LINK_INVALID", "This verification link is invalid or has expired.");
     }
 
     const { emailAccount: account } = await this.prisma.emailVerificationToken.findUniqueOrThrow({
@@ -129,9 +129,55 @@ export class AuthService {
     await this.events.record("EMAIL_VERIFIED", { userId: account.userId });
 
     if (account.user.status !== "ACTIVE") {
-      throw new Error("VERIFICATION_LINK_INVALID");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "VERIFICATION_LINK_INVALID", "This verification link is invalid or has expired.");
     }
     return this.startSession(account.userId, { userNumber: account.user.userNumber, email: account.email, emailVerified: true }, client, "email_verification");
+  }
+
+  /**
+   * Signs in with email and password. Unknown email, wrong password and disabled account all
+   * return the same error, with equalized timing. Unverified accounts are told so only after the
+   * password is proven, and get a fresh verification link.
+   */
+  async login({ email, password }: LoginInput, client: ClientInfo): Promise<NewSession> {
+    await this.rateLimit.consume(`login:ip:${client.ip}`, rateLimits.loginPerIp);
+    const failureKey = `login-failures:email:${rateLimitId(email)}`;
+    // Checked before verifying, so a locked email stays locked even for the right password.
+    await this.rateLimit.assertAvailable(failureKey, rateLimits.loginFailuresPerEmail);
+
+    const account = await this.prisma.emailAccount.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        userId: true,
+        email: true,
+        passwordHash: true,
+        emailVerifiedAt: true,
+        user: { select: { status: true, userNumber: true } },
+      },
+    });
+
+    const passwordValid = account
+      ? await this.passwords.verify(account.passwordHash, password)
+      : await this.passwords.verifyAgainstDummy(password);
+
+    if (!account || !passwordValid || account.user.status !== "ACTIVE") {
+      await this.rateLimit.hit(failureKey, rateLimits.loginFailuresPerEmail);
+      await this.events.record("LOGIN_FAILED", { userId: account?.userId, email, client });
+      throw new ApiError(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Incorrect email or password.");
+    }
+
+    if (!account.emailVerifiedAt) {
+      await this.sendVerificationEmail(account.id, account.userId, account.email, client);
+      throw new ApiError(HttpStatus.FORBIDDEN, "EMAIL_NOT_VERIFIED", "Verify your email address to sign in.");
+    }
+
+    return this.startSession(
+      account.userId,
+      { userNumber: account.user.userNumber, email: account.email, emailVerified: true },
+      client,
+      "password",
+    );
   }
 
   /** Revokes the session server-side. Safe to call with an unknown or already revoked token. */
@@ -216,7 +262,7 @@ export class AuthService {
     const normalizedEmail = email.trim().toLowerCase();
     const account = await this.prisma.emailAccount.findUnique({
       where: { email: normalizedEmail },
-      select: { id: true, userId: true, user: { select: { id: true, status: true } } },
+      select: { id: true, userId: true, emailVerifiedAt: true, user: { select: { status: true } } },
     });
 
     // Only proceed if we have a verified, active email/password account
@@ -229,7 +275,7 @@ export class AuthService {
           data: {
             userId: account.userId,
             tokenHash,
-            expiresAt: new Date(Date.now() + authConfig.rateLimits.resetPasswordPerIp.windowSeconds * 1000),
+            expiresAt: new Date(Date.now() + authConfig.passwordResetToken.ttlSeconds * 1000),
           },
         });
 
@@ -238,7 +284,7 @@ export class AuthService {
           await this.emails.sendPasswordResetEmail(
             normalizedEmail,
             `${this.webAppUrl}/reset-password#token=${token}`,
-            authConfig.rateLimits.resetPasswordPerIp.windowSeconds / 3600,
+            authConfig.passwordResetToken.ttlSeconds / 3600,
           );
         } catch {
           // If email fails, clean up the token and don't leak that via the response
@@ -286,7 +332,7 @@ export class AuthService {
         client,
         metadata: { reason: "invalid_or_expired_token" },
       });
-      throw new Error("PASSWORD_RESET_INVALID");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "PASSWORD_RESET_INVALID", "This password reset link is invalid or has expired.");
     }
 
     const resetToken = await this.prisma.passwordResetToken.findUniqueOrThrow({
@@ -310,15 +356,15 @@ export class AuthService {
         client,
         metadata: { reason: "account_disabled" },
       });
-      throw new Error("PASSWORD_RESET_INVALID");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "PASSWORD_RESET_INVALID", "This password reset link is invalid or has expired.");
     }
 
     // Validate the new password against the policy
     if (newPassword.length < 10) {
-      throw new Error("VALIDATION_FAILED");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "The password does not meet the requirements.");
     }
     if (newPassword.length > 128) {
-      throw new Error("VALIDATION_FAILED");
+      throw new ApiError(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "The password does not meet the requirements.");
     }
 
     // Hash the new password

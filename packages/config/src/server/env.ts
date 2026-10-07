@@ -39,6 +39,10 @@ const envSchema = z.object({
   SMTP_USER: optionalTrimmedString,
   SMTP_PASSWORD: z.string().transform((value) => value || undefined).optional(),
   SMTP_FROM: optionalTrimmedString,
+  /** Google OAuth client; all three must be set together. Leave empty to disable Google sign-in. */
+  GOOGLE_CLIENT_ID: optionalTrimmedString,
+  GOOGLE_CLIENT_SECRET: optionalTrimmedString,
+  GOOGLE_REDIRECT_URI: z.url({ protocol: /^https?$/ }).or(z.literal("").transform(() => undefined)).optional(),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 }).superRefine((env, context) => {
@@ -61,6 +65,14 @@ const envSchema = z.object({
       code: "custom",
       path: ["SMTP_FROM"],
       message: 'SMTP_FROM must be an address ("noreply@example.com") or "Name <noreply@example.com>"',
+    });
+  }
+  const google = [env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URI];
+  if (google.some(Boolean) && !google.every(Boolean)) {
+    context.addIssue({
+      code: "custom",
+      path: ["GOOGLE_CLIENT_ID"],
+      message: "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI must be configured together",
     });
   }
   if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) {

@@ -1,4 +1,14 @@
 import { Logger } from "@nestjs/common";
+import { z } from "@repo/validation";
+
+/** The parts of Google's JWKS document that we rely on; other JWK members pass through to Web Crypto. */
+const jwkSchema = z
+  .object({ kty: z.string(), kid: z.string().optional(), n: z.string().optional(), e: z.string().optional() })
+  .loose();
+const jwksSchema = z.object({ keys: z.array(jwkSchema) });
+type JsonWebKey = z.infer<typeof jwkSchema>;
+const tokenResponseSchema = z.object({ id_token: z.string().min(1), access_token: z.string().optional() });
+const tokenInfoSchema = z.object({ aud: z.string() });
 
 let cachedKeys: JsonWebKey[] | null = null;
 let fetchedAt = 0;
@@ -23,28 +33,18 @@ function base64urlToBuffer(base64url: string): Buffer {
   return Buffer.from(base64, "base64");
 }
 
-/** Converts a base64url-encoded big integer string to a hex string. */
-function toHex(buffer: Buffer): string {
-  return buffer.toString("hex").replace(/^0+/, "") || "0";
-}
-
 /**
  * Validates the Google ID token signature client-side against Google's published JWKs.
  * Uses the Web Crypto API (available in Node 22+) to verify without external deps.
 */
-async function verifySignature(idToken: string, kid: string): Promise<boolean> {
+async function verifySignature(idToken: string, kid: string, clientId: string): Promise<boolean> {
   if (!crypto.subtle) {
     // Fall back to tokeninfo endpoint if Web Crypto is unavailable.
-    return verifyViaTokeninfo(idToken);
+    return verifyViaTokeninfo(idToken, clientId);
   }
 
-  const [keys, fetchedAtTime] = await fetchJwks();
-  if (Date.now() - fetchedAtTime > CACHE_TTL_MS) {
-    cachedKeys = null;
-    const [newKeys, newFetchedAt] = await fetchJwks();
-    return doVerify(newKeys, idToken, kid);
-  }
-  return doVerify(keys, idToken, kid);
+  const [keys] = await fetchJwks();
+  return doVerify(keys, idToken, kid, clientId);
 }
 
 async function fetchJwks(): Promise<[JsonWebKey[], number]> {
@@ -52,20 +52,20 @@ async function fetchJwks(): Promise<[JsonWebKey[], number]> {
 
   const response = await fetch(JWKS_URL, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error(`Failed to fetch Google JWKs: ${response.status}`);
-  const jwks = await response.json();
+  const jwks = jwksSchema.parse(await response.json());
   cachedKeys = jwks.keys;
   fetchedAt = Date.now();
-  return [cachedKeys, fetchedAt];
+  return [jwks.keys, fetchedAt];
 }
 
-async function doVerify(keys: JsonWebKey[], idToken: string, kid: string): Promise<boolean> {
+async function doVerify(keys: JsonWebKey[], idToken: string, kid: string, clientId: string): Promise<boolean> {
   const jwk = keys.find((key) => key.kid === kid);
-  if (!jwk) return verifyViaTokeninfo(idToken);
+  if (!jwk) return verifyViaTokeninfo(idToken, clientId);
 
   try {
     const key = await crypto.subtle.importKey(
       "jwk",
-      jwk as any,
+      jwk,
       { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
       false,
       ["verify"],
@@ -74,7 +74,6 @@ async function doVerify(keys: JsonWebKey[], idToken: string, kid: string): Promi
     const [header, payload, signature] = idToken.split(".");
     if (!header || !payload || !signature) return false;
 
-    const headerObj = JSON.parse(Buffer.from(base64urlToBuffer(header)).toString("utf8"));
     const signingInput = `${header}.${payload}`;
     const sigBuffer = base64urlToBuffer(signature);
 
@@ -86,17 +85,17 @@ async function doVerify(keys: JsonWebKey[], idToken: string, kid: string): Promi
     );
     return isValid;
   } catch {
-    return verifyViaTokeninfo(idToken);
+    return verifyViaTokeninfo(idToken, clientId);
   }
 }
 
 /** Fallback: validate the ID token by introspecting it via Google's tokeninfo endpoint. */
-async function verifyViaTokeninfo(idToken: string): Promise<boolean> {
+async function verifyViaTokeninfo(idToken: string, clientId: string): Promise<boolean> {
   try {
-    const response = await fetch(`${TOKENINFO_URL}?id_token=${idToken}`, { signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(`${TOKENINFO_URL}?${new URLSearchParams({ id_token: idToken })}`, { signal: AbortSignal.timeout(10_000) });
     if (!response.ok) return false;
-    const data = await response.json();
-    return data.aud === process.env.GOOGLE_CLIENT_ID;
+    const data = tokenInfoSchema.safeParse(await response.json());
+    return data.success && data.data.aud === clientId;
   } catch {
     return false;
   }
@@ -126,7 +125,7 @@ export async function validateGoogleIdToken(idToken: string, clientId: string): 
   if (signatureBuffer.length === 0) throw new Error("Empty signature");
 
   // Verify signature
-  const signatureValid = await verifySignature(idToken, header.kid ?? "");
+  const signatureValid = await verifySignature(idToken, header.kid ?? "", clientId);
   if (!signatureValid) throw new Error("Invalid ID token signature");
 
   // Decode and validate claims
@@ -190,8 +189,9 @@ export async function exchangeCodeForTokens(
       throw new Error(`Token exchange failed: ${response.status}`);
     }
 
-    const data: { id_token: string; access_token?: string; expires_in?: number } = await response.json();
-    if (!data.id_token) throw new Error("Token response missing id_token");
+    const parsed = tokenResponseSchema.safeParse(await response.json());
+    if (!parsed.success) throw new Error("Token response missing id_token");
+    const data = parsed.data;
 
     return { idToken: data.id_token, accessToken: data.access_token };
   } catch (error) {
