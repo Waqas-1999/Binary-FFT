@@ -12,7 +12,12 @@ import { generateToken, hashToken } from "./tokens.ts";
 export interface AuthContext {
   userId: string;
   sessionId: string;
+  /** When this session last passed a strong authentication (sign-in or reauthentication). */
+  authenticatedAt: Date;
 }
+
+/** Identifies a session without implying anything about how recently it authenticated. */
+export type SessionRef = Pick<AuthContext, "userId" | "sessionId">;
 
 const { ttlSeconds, idleTimeoutSeconds, activityUpdateIntervalSeconds } = authConfig.session;
 
@@ -53,7 +58,15 @@ export class SessionService {
   async authenticate(token: string): Promise<AuthContext | null> {
     const session = await this.prisma.session.findUnique({
       where: { tokenHash: hashToken(token) },
-      select: { id: true, userId: true, expiresAt: true, revokedAt: true, lastActiveAt: true, user: { select: { status: true } } },
+      select: {
+        id: true,
+        userId: true,
+        expiresAt: true,
+        revokedAt: true,
+        lastActiveAt: true,
+        authenticatedAt: true,
+        user: { select: { status: true } },
+      },
     });
     const now = Date.now();
     if (
@@ -72,11 +85,11 @@ export class SessionService {
         .update({ where: { id: session.id }, data: { lastActiveAt: new Date(now) }, select: { id: true } })
         .catch((error: unknown) => this.logger.warn(`Failed to update session activity: ${toErrorMessage(error)}`));
     }
-    return { userId: session.userId, sessionId: session.id };
+    return { userId: session.userId, sessionId: session.id, authenticatedAt: session.authenticatedAt };
   }
 
   /** Revokes the session for a token. Returns the revoked session, or null if it was already inactive. */
-  async revokeByToken(token: string): Promise<AuthContext | null> {
+  async revokeByToken(token: string): Promise<SessionRef | null> {
     const tokenHash = hashToken(token);
     const session = await this.prisma.session.findUnique({
       where: { tokenHash },
@@ -89,6 +102,44 @@ export class SessionService {
       data: { revokedAt: new Date() },
     });
     return count === 1 ? { userId: session.userId, sessionId: session.id } : null;
+  }
+
+  /** The user's live sessions, most recently active first. */
+  listActive(userId: string) {
+    const now = Date.now();
+    return this.prisma.session.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date(now) },
+        lastActiveAt: { gt: new Date(now - idleTimeoutSeconds * 1000) },
+      },
+      orderBy: { lastActiveAt: "desc" },
+      select: { id: true, createdAt: true, lastActiveAt: true, ipAddress: true, userAgent: true },
+    });
+  }
+
+  /** Revokes one of the user's own sessions. False if it doesn't exist, isn't theirs or is already revoked. */
+  async revokeOwned(userId: string, sessionId: string): Promise<boolean> {
+    const { count } = await this.prisma.session.updateMany({
+      where: { id: sessionId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return count === 1;
+  }
+
+  /** Revokes every other live session in one statement; returns how many. */
+  async revokeOthers(userId: string, keepSessionId: string): Promise<number> {
+    const { count } = await this.prisma.session.updateMany({
+      where: { userId, revokedAt: null, id: { not: keepSessionId } },
+      data: { revokedAt: new Date() },
+    });
+    return count;
+  }
+
+  /** Records a successful reauthentication on this session. */
+  async markAuthenticated(sessionId: string): Promise<void> {
+    await this.prisma.session.update({ where: { id: sessionId }, data: { authenticatedAt: new Date() }, select: { id: true } });
   }
 
   readToken(req: Request): string | undefined {

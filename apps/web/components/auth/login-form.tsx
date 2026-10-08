@@ -1,15 +1,18 @@
 "use client";
 
-import type { SessionResponse } from "@repo/types";
+import type { LoginResponse } from "@repo/types";
 import { Button, Input, PasswordInput } from "@repo/ui";
 import { loginSchema } from "@repo/validation";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiRequestError, errorMessage } from "../../lib/api";
 import { setAuthenticated } from "../../lib/auth";
+import { loginErrorMessages, lookup } from "../../lib/oauth";
 import { authRoutes, safeRedirectPath } from "../../lib/routes";
 import { AuthHeading, type FieldErrors, fieldErrorsFrom, FormAlert } from "./form";
+import { GoogleSignIn } from "./google-button";
+import { TwoFactorChallenge } from "./two-factor-challenge";
 
 const linkClasses = "focus-ring rounded-sm font-semibold text-brand hover:text-brand-hover";
 
@@ -20,6 +23,23 @@ export function LoginForm() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [formError, setFormError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [secondStep, setSecondStep] = useState(false);
+
+  // Google sends people back here with `?error=<code>`; only known codes map to a message.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const message = lookup(loginErrorMessages, params.get("error"));
+    if (message) queueMicrotask(() => setFormError(message));
+    // Google sign-in sends people here to finish with their second factor (the challenge is in a cookie).
+    if (params.get("step") === "two-factor") queueMicrotask(() => setSecondStep(true));
+  }, []);
+
+  function restart() {
+    window.history.replaceState(window.history.state, "", window.location.pathname);
+    setSecondStep(false);
+    setSubmitting(false);
+    setPassword("");
+  }
 
   async function submit() {
     const parsed = loginSchema.safeParse({ email, password });
@@ -31,8 +51,14 @@ export function LoginForm() {
     setFormError(undefined);
     setSubmitting(true);
     try {
-      const { user } = await api<SessionResponse>("/auth/login", { method: "POST", body: { email, password } });
-      setAuthenticated(user);
+      const result = await api<LoginResponse>("/auth/login", { method: "POST", body: { email, password } });
+      if ("status" in result) {
+        setPassword("");
+        setSecondStep(true);
+        setSubmitting(false);
+        return;
+      }
+      setAuthenticated(result.user);
       router.replace(safeRedirectPath(new URLSearchParams(window.location.search).get("next")));
     } catch (error) {
       if (error instanceof ApiRequestError && error.code === "VALIDATION_FAILED") setErrors(fieldErrorsFrom(error));
@@ -40,6 +66,8 @@ export function LoginForm() {
       setSubmitting(false);
     }
   }
+
+  if (secondStep) return <TwoFactorChallenge onRestart={restart} />;
 
   return (
     <form
@@ -79,6 +107,7 @@ export function LoginForm() {
       <Button type="submit" size="lg" fullWidth loading={submitting}>
         Sign in
       </Button>
+      <GoogleSignIn />
       <p className="text-center text-body-small text-text-secondary">
         New here?{" "}
         <Link href={authRoutes.signup} className={linkClasses}>

@@ -1,7 +1,8 @@
-import { Card, Container, EmptyState, PageHeader, Tabs, ThemeSelector } from "@repo/ui";
-import { Bell, ShieldCheck } from "lucide-react";
+import { Card, Container, PageHeader, Tabs, ThemeSelector } from "@repo/ui";
 import type { Metadata } from "next";
-import { AccountDetails } from "../../../components/account-details";
+import { NotificationSettings } from "../../../components/profile/notification-settings";
+import { ProfileSettings } from "../../../components/profile/profile-settings";
+import { SecuritySettings } from "../../../components/security/security-settings";
 
 export const metadata: Metadata = { title: "Profile" };
 
@@ -15,11 +16,7 @@ export default function ProfilePage() {
           {
             value: "profile",
             label: "Profile",
-            content: (
-              <Card>
-                <AccountDetails />
-              </Card>
-            ),
+            content: <ProfileSettings />,
           },
           {
             value: "appearance",
@@ -37,28 +34,12 @@ export default function ProfilePage() {
           {
             value: "security",
             label: "Security",
-            content: (
-              <Card>
-                <EmptyState
-                  icon={<ShieldCheck />}
-                  title="Security settings"
-                  description="Password and sign-in protection will be managed here."
-                />
-              </Card>
-            ),
+            content: <SecuritySettings />,
           },
           {
             value: "notifications",
             label: "Notifications",
-            content: (
-              <Card>
-                <EmptyState
-                  icon={<Bell />}
-                  title="Notification preferences"
-                  description="Choose which updates you receive. Coming in a future update."
-                />
-              </Card>
-            ),
+            content: <NotificationSettings />,
           },
         ]}
       />

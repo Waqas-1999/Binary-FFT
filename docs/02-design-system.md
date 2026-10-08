@@ -124,7 +124,7 @@ Dialogs and sheets animate with CSS `@starting-style` (no animation library). Un
 
 `@repo/ui` exports: Button (variants `primary` · `secondary` · `tertiary` · `ghost` · `danger`, sizes
 `md`/`lg`, `loading`, `icon`), `buttonStyles()` for links, IconButton, Input, PasswordInput,
-NumberInput, Select, SearchInput, Tabs, Card, Badge, Dialog, BottomSheet, Dropdown, Tooltip,
+NumberInput, Select, SearchInput, Switch, Tabs, Card, Badge, Dialog, BottomSheet, Dropdown, Tooltip,
 ToastProvider/`useToast`, Separator, Divider, Avatar, Skeleton, Spinner, Progress, EmptyState,
 ErrorState, PageHeader, Container, Stack, Row, ConnectionStatus, OfflineBanner/`useOnlineStatus`,
 ThemeSelector, ThemeSync.

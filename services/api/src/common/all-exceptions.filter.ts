@@ -3,6 +3,7 @@ import type { ApiErrorCode, ApiErrorResponse, ValidationIssue } from "@repo/type
 import type { Request, Response } from "express";
 import { STATUS_CODES } from "node:http";
 import { RateLimitedException } from "./api-error.ts";
+import { requestPath } from "./client-info.ts";
 
 const defaultCodes: Partial<Record<number, ApiErrorCode>> = {
   400: "VALIDATION_FAILED",
@@ -31,7 +32,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       : { message: "Internal server error", issues: undefined, code: undefined };
 
     if (statusCode >= 500) {
-      this.logger.error(`${req.method} ${req.originalUrl} failed`, exception instanceof Error ? exception.stack : exception, {
+      this.logger.error(`${req.method} ${requestPath(req)} failed`, exception instanceof Error ? exception.stack : exception, {
         requestId,
       });
     }
@@ -45,7 +46,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       error: STATUS_CODES[statusCode] ?? "Error",
       message,
       ...(issues && { issues }),
-      path: req.originalUrl,
+      path: requestPath(req),
       requestId,
       timestamp: new Date().toISOString(),
     };

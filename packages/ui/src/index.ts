@@ -17,6 +17,7 @@ export { Divider, Separator } from "./separator.tsx";
 export { Skeleton } from "./skeleton.tsx";
 export { Spinner } from "./spinner.tsx";
 export { EmptyState, ErrorState } from "./state.tsx";
+export { Switch, type SwitchProps } from "./switch.tsx";
 export { Tabs, type TabItem } from "./tabs.tsx";
 export { ToastProvider, useToast, type ToastInput, type ToastTone } from "./toast.tsx";
 export { Tooltip } from "./tooltip.tsx";

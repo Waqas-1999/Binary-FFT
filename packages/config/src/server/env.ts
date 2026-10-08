@@ -43,6 +43,23 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: optionalTrimmedString,
   GOOGLE_CLIENT_SECRET: optionalTrimmedString,
   GOOGLE_REDIRECT_URI: z.url({ protocol: /^https?$/ }).or(z.literal("").transform(() => undefined)).optional(),
+  /**
+   * Base64 of 32 random bytes; encrypts TOTP secrets at rest (AES-256-GCM). Generate with
+   * `node -p "require('node:crypto').randomBytes(32).toString('base64')"`. Required in production.
+   * Changing it makes stored secrets undecryptable; see docs/01-architecture.md before rotating.
+   */
+  TWO_FACTOR_ENCRYPTION_KEY: z
+    .string()
+    .trim()
+    .transform((value) => value || undefined)
+    .optional(),
+  /**
+   * Telegram bot for notification delivery (not sign-in). All three must be set together; leave empty to
+   * disable the integration. Optional in every environment: the rest of the app works without it.
+   */
+  TELEGRAM_BOT_TOKEN: optionalTrimmedString,
+  TELEGRAM_BOT_USERNAME: optionalTrimmedString,
+  TELEGRAM_WEBHOOK_SECRET: optionalTrimmedString,
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 }).superRefine((env, context) => {
@@ -67,12 +84,51 @@ const envSchema = z.object({
       message: 'SMTP_FROM must be an address ("noreply@example.com") or "Name <noreply@example.com>"',
     });
   }
+  if (env.TWO_FACTOR_ENCRYPTION_KEY) {
+    const key = /^[A-Za-z0-9+/]+={0,2}$/.test(env.TWO_FACTOR_ENCRYPTION_KEY)
+      ? Buffer.from(env.TWO_FACTOR_ENCRYPTION_KEY, "base64")
+      : undefined;
+    if (key?.length !== 32) {
+      context.addIssue({
+        code: "custom",
+        path: ["TWO_FACTOR_ENCRYPTION_KEY"],
+        message: "TWO_FACTOR_ENCRYPTION_KEY must be base64 of exactly 32 bytes",
+      });
+    }
+  } else if (env.NODE_ENV === "production") {
+    context.addIssue({
+      code: "custom",
+      path: ["TWO_FACTOR_ENCRYPTION_KEY"],
+      message: "TWO_FACTOR_ENCRYPTION_KEY is required in production",
+    });
+  }
   const google = [env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URI];
   if (google.some(Boolean) && !google.every(Boolean)) {
     context.addIssue({
       code: "custom",
       path: ["GOOGLE_CLIENT_ID"],
       message: "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI must be configured together",
+    });
+  }
+  const telegram = [env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_BOT_USERNAME, env.TELEGRAM_WEBHOOK_SECRET];
+  if (telegram.some(Boolean) && !telegram.every(Boolean)) {
+    context.addIssue({
+      code: "custom",
+      path: ["TELEGRAM_BOT_TOKEN"],
+      message: "TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME and TELEGRAM_WEBHOOK_SECRET must be configured together",
+    });
+  }
+  if (env.TELEGRAM_BOT_TOKEN && !/^\d{3,}:[\w-]{20,}$/.test(env.TELEGRAM_BOT_TOKEN)) {
+    context.addIssue({ code: "custom", path: ["TELEGRAM_BOT_TOKEN"], message: "TELEGRAM_BOT_TOKEN is not a valid bot token" });
+  }
+  if (env.TELEGRAM_BOT_USERNAME && !/^@?[A-Za-z][\w]{4,31}$/.test(env.TELEGRAM_BOT_USERNAME)) {
+    context.addIssue({ code: "custom", path: ["TELEGRAM_BOT_USERNAME"], message: "TELEGRAM_BOT_USERNAME is not a valid bot username" });
+  }
+  if (env.TELEGRAM_WEBHOOK_SECRET && !/^[A-Za-z0-9_-]{16,256}$/.test(env.TELEGRAM_WEBHOOK_SECRET)) {
+    context.addIssue({
+      code: "custom",
+      path: ["TELEGRAM_WEBHOOK_SECRET"],
+      message: "TELEGRAM_WEBHOOK_SECRET must be 16-256 characters of A-Z, a-z, 0-9, _ or -",
     });
   }
   if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) {

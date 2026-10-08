@@ -1,7 +1,8 @@
-import { HttpStatus, Inject, Injectable } from "@nestjs/common";
+import { HttpException, HttpStatus, Inject, Injectable, Logger } from "@nestjs/common";
 import type { ServerConfig } from "@repo/config/server";
 import type { AuthUser } from "@repo/types";
-import type { LoginInput, SignupInput } from "@repo/validation";
+import { toErrorMessage } from "@repo/utils";
+import { type LoginInput, passwordAvoidsEmail, type SignupInput } from "@repo/validation";
 import { ApiError } from "../common/api-error.ts";
 import type { ClientInfo } from "../common/client-info.ts";
 import { SERVER_CONFIG } from "../config/config.module.ts";
@@ -11,6 +12,7 @@ import { Prisma } from "../generated/prisma/client.js";
 import { RateLimitService, rateLimitId } from "../rate-limit/rate-limit.service.ts";
 import { AuthEventsService } from "./auth-events.service.ts";
 import { authConfig } from "./auth.config.ts";
+import { LoginSessionService } from "./login-session.service.ts";
 import { PasswordService } from "./password.service.ts";
 import { SessionService } from "./session.service.ts";
 import { generateToken, hashToken } from "./tokens.ts";
@@ -21,10 +23,16 @@ export interface NewSession {
   user: AuthUser;
 }
 
-const { rateLimits, verificationToken } = authConfig;
+/** A completed first factor either opens a session or, with two-factor on, a challenge to finish. */
+export type AuthResult =
+  | { kind: "session"; session: NewSession }
+  | { kind: "challenge"; token: string; expiresAt: Date };
+
+const { rateLimits, verificationToken, passwordResetToken } = authConfig;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly webAppUrl: string;
 
   constructor(
@@ -34,6 +42,7 @@ export class AuthService {
     private readonly events: AuthEventsService,
     private readonly emails: EmailService,
     private readonly rateLimit: RateLimitService,
+    private readonly loginSessions: LoginSessionService,
     @Inject(SERVER_CONFIG) config: ServerConfig,
   ) {
     this.webAppUrl = config.app.webAppUrl;
@@ -92,7 +101,7 @@ export class AuthService {
   }
 
   /** Consumes a verification token, marks the email verified and signs the user in. */
-  async verifyEmail(token: string, client: ClientInfo): Promise<NewSession> {
+  async verifyEmail(token: string, client: ClientInfo): Promise<AuthResult> {
     await this.rateLimit.consume(`verify:ip:${client.ip}`, rateLimits.verifyPerIp);
     const tokenHash = hashToken(token);
     const now = new Date();
@@ -131,7 +140,7 @@ export class AuthService {
     if (account.user.status !== "ACTIVE") {
       throw new ApiError(HttpStatus.BAD_REQUEST, "VERIFICATION_LINK_INVALID", "This verification link is invalid or has expired.");
     }
-    return this.startSession(account.userId, { userNumber: account.user.userNumber, email: account.email, emailVerified: true }, client, "email_verification");
+    return this.startSession(account.userId, client, "email_verification");
   }
 
   /**
@@ -139,7 +148,7 @@ export class AuthService {
    * return the same error, with equalized timing. Unverified accounts are told so only after the
    * password is proven, and get a fresh verification link.
    */
-  async login({ email, password }: LoginInput, client: ClientInfo): Promise<NewSession> {
+  async login({ email, password }: LoginInput, client: ClientInfo): Promise<AuthResult> {
     await this.rateLimit.consume(`login:ip:${client.ip}`, rateLimits.loginPerIp);
     const failureKey = `login-failures:email:${rateLimitId(email)}`;
     // Checked before verifying, so a locked email stays locked even for the right password.
@@ -172,12 +181,7 @@ export class AuthService {
       throw new ApiError(HttpStatus.FORBIDDEN, "EMAIL_NOT_VERIFIED", "Verify your email address to sign in.");
     }
 
-    return this.startSession(
-      account.userId,
-      { userNumber: account.user.userNumber, email: account.email, emailVerified: true },
-      client,
-      "password",
-    );
+    return this.startSession(account.userId, client, "password");
   }
 
   /** Revokes the session server-side. Safe to call with an unknown or already revoked token. */
@@ -190,24 +194,26 @@ export class AuthService {
   async getUser(userId: string): Promise<AuthUser> {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      select: { userNumber: true, emailAccount: { select: { email: true, emailVerifiedAt: true } } },
+      select: {
+        userNumber: true,
+        emailAccount: { select: { email: true, emailVerifiedAt: true } },
+        oAuthIdentities: { where: { provider: "GOOGLE" }, select: { emailAtLinkTime: true } },
+      },
     });
+    const google = user.oAuthIdentities[0];
     return {
       userNumber: user.userNumber,
-      email: user.emailAccount?.email ?? "",
-      emailVerified: Boolean(user.emailAccount?.emailVerifiedAt),
+      // Google-only accounts have no password account; show the email Google reported (always verified).
+      email: user.emailAccount?.email ?? google?.emailAtLinkTime ?? "",
+      emailVerified: user.emailAccount ? Boolean(user.emailAccount.emailVerifiedAt) : Boolean(google),
+      googleConnected: Boolean(google),
     };
   }
 
-  private async startSession(
-    userId: string,
-    user: AuthUser,
-    client: ClientInfo,
-    method: "password" | "email_verification",
-  ): Promise<NewSession> {
-    const session = await this.sessions.create(userId, client);
-    await this.events.record("LOGIN_SUCCESS", { userId, sessionId: session.sessionId, client, metadata: { method } });
-    return { token: session.token, expiresAt: session.expiresAt, user };
+  private async startSession(userId: string, client: ClientInfo, method: "password" | "email_verification"): Promise<AuthResult> {
+    const outcome = await this.loginSessions.afterFirstFactor(userId, method, client);
+    if (outcome.kind === "challenge") return outcome;
+    return { kind: "session", session: { token: outcome.token, expiresAt: outcome.expiresAt, user: await this.getUser(userId) } };
   }
 
   private async notifyExistingAccount(
@@ -253,142 +259,108 @@ export class AuthService {
     await this.events.record("EMAIL_VERIFICATION_SENT", { userId, client });
   }
 
-  /** Initiates password reset for an email address. Always returns success to avoid leaking account existence. */
+  /**
+   * Starts a password reset. The caller always gets the same result: whether the address has an
+   * account, is verified or is disabled is never revealed, and the work that differs runs after
+   * the response so timing doesn't reveal it either.
+   */
   async forgotPassword(email: string, client: ClientInfo): Promise<void> {
-    // Always respond the same way to avoid leaking whether an email exists
-    await this.rateLimit.consume(`forgot-password:ip:${client.ip}`, authConfig.rateLimits.forgotPasswordPerIp);
+    await this.rateLimit.consume(`forgot-password:ip:${client.ip}`, rateLimits.forgotPasswordPerIp);
     await this.events.record("PASSWORD_RESET_REQUESTED", { email, client });
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const account = await this.prisma.emailAccount.findUnique({
-      where: { email: normalizedEmail },
-      select: { id: true, userId: true, emailVerifiedAt: true, user: { select: { status: true } } },
+    void this.issuePasswordReset(email).catch((error: unknown) => {
+      this.logger.error(`Password reset email failed: ${toErrorMessage(error)}`);
     });
-
-    // Only proceed if we have a verified, active email/password account
-    if (account && account.user.status === "ACTIVE" && account.emailVerifiedAt) {
-      // Create a password reset token (only hash is stored)
-      const token = generateToken();
-      const tokenHash = hashToken(token);
-      try {
-        await this.prisma.passwordResetToken.create({
-          data: {
-            userId: account.userId,
-            tokenHash,
-            expiresAt: new Date(Date.now() + authConfig.passwordResetToken.ttlSeconds * 1000),
-          },
-        });
-
-        // Send the reset email with the token in the URL fragment
-        try {
-          await this.emails.sendPasswordResetEmail(
-            normalizedEmail,
-            `${this.webAppUrl}/reset-password#token=${token}`,
-            authConfig.passwordResetToken.ttlSeconds / 3600,
-          );
-        } catch {
-          // If email fails, clean up the token and don't leak that via the response
-          await this.prisma.passwordResetToken.deleteMany({
-            where: { userId: account.userId, tokenHash },
-          });
-          return;
-        }
-
-        await this.events.record("PASSWORD_RESET_SENT", { userId: account.userId, client });
-      } catch (error) {
-        // If token creation fails (e.g. unique constraint), silently continue
-        // The generic response prevents leaking information about why it failed
-        if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) {
-          throw error;
-        }
-      }
-    }
-    // Always return success regardless of whether the email exists or is eligible
   }
 
-  /** Completes password reset using a token and new password. */
-  async resetPassword(
-    token: string,
-    newPassword: string,
-    client: ClientInfo,
-  ): Promise<{ userId: string; userNumber: number }> {
-    await this.rateLimit.consume(`reset-password:ip:${client.ip}`, authConfig.rateLimits.resetPasswordPerIp);
-    const tokenHash = hashToken(token);
-    const now = new Date();
-
-    // Atomic consumption: ensures the token can only be used once
-    const updateResult = await this.prisma.passwordResetToken.updateMany({
-      where: {
-        tokenHash,
-        usedAt: null,
-        expiresAt: { gt: now },
-      },
-      data: { usedAt: now },
+  /** Emails a one-hour, single-use reset link to verified, active password accounts only. */
+  private async issuePasswordReset(email: string): Promise<void> {
+    const account = await this.prisma.emailAccount.findUnique({
+      where: { email },
+      select: { userId: true, emailVerifiedAt: true, user: { select: { status: true } } },
     });
+    if (!account?.emailVerifiedAt || account.user.status !== "ACTIVE") return;
+    if (!(await this.rateLimit.tryConsume(`reset-emails:${rateLimitId(email)}`, rateLimits.resetEmailsPerAddress))) return;
 
-    if (updateResult.count !== 1) {
-      // Token not found, expired, or already used
-      await this.events.record("PASSWORD_RESET_FAILED", {
-        client,
-        metadata: { reason: "invalid_or_expired_token" },
-      });
-      throw new ApiError(HttpStatus.BAD_REQUEST, "PASSWORD_RESET_INVALID", "This password reset link is invalid or has expired.");
+    const token = generateToken();
+    const reset = await this.prisma.passwordResetToken.create({
+      data: {
+        userId: account.userId,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + passwordResetToken.ttlSeconds * 1000),
+      },
+      select: { id: true },
+    });
+    try {
+      // Like verification links, the token travels in the URL fragment: never sent to servers or logged.
+      await this.emails.sendPasswordResetEmail(
+        email,
+        `${this.webAppUrl}/reset-password#token=${token}`,
+        passwordResetToken.ttlSeconds / 3600,
+      );
+    } catch {
+      await this.prisma.passwordResetToken.delete({ where: { id: reset.id } });
     }
+  }
 
-    const resetToken = await this.prisma.passwordResetToken.findUniqueOrThrow({
+  /**
+   * Sets a new password with a reset token. The token is claimed, the password replaced and every
+   * session revoked in one transaction, so two simultaneous attempts cannot both succeed and a
+   * stolen session never survives a reset. The user is not signed in; they sign in again.
+   */
+  async resetPassword(token: string, password: string, client: ClientInfo): Promise<void> {
+    await this.rateLimit.consume(`reset-password:ip:${client.ip}`, rateLimits.resetPasswordPerIp);
+    const tokenHash = hashToken(token);
+
+    const record = await this.prisma.passwordResetToken.findUnique({
       where: { tokenHash },
       select: {
         userId: true,
-        user: {
-          select: {
-            userNumber: true,
-            status: true,
-            emailAccount: { select: { id: true, email: true, emailVerifiedAt: true } },
-          },
-        },
+        usedAt: true,
+        expiresAt: true,
+        user: { select: { status: true, emailAccount: { select: { email: true } } } },
       },
     });
+    const email = record?.user.emailAccount?.email;
+    if (!record || !email || record.usedAt || record.expiresAt.getTime() <= Date.now() || record.user.status !== "ACTIVE") {
+      return this.failReset(client, "invalid_token", record?.userId);
+    }
+    if (!passwordAvoidsEmail(email, password)) {
+      throw new HttpException(
+        {
+          code: "VALIDATION_FAILED",
+          message: "Invalid request",
+          issues: [{ path: "password", message: "Don't use your email in your password" }],
+        },
+        HttpStatus.BAD_REQUEST,
+      );
+    }
 
-    // Verify the user is still active
-    if (resetToken.user.status !== "ACTIVE") {
-      await this.events.record("PASSWORD_RESET_FAILED", {
-        userId: resetToken.userId,
-        client,
-        metadata: { reason: "account_disabled" },
+    const passwordHash = await this.passwords.hash(password);
+    const revokedSessions = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      // Atomic claim: a concurrent request with the same token matches no row and rolls back.
+      const claimed = await tx.passwordResetToken.updateMany({
+        where: { tokenHash, usedAt: null, expiresAt: { gt: now } },
+        data: { usedAt: now },
       });
-      throw new ApiError(HttpStatus.BAD_REQUEST, "PASSWORD_RESET_INVALID", "This password reset link is invalid or has expired.");
-    }
+      if (claimed.count !== 1) return null;
 
-    // Validate the new password against the policy
-    if (newPassword.length < 10) {
-      throw new ApiError(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "The password does not meet the requirements.");
-    }
-    if (newPassword.length > 128) {
-      throw new ApiError(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "The password does not meet the requirements.");
-    }
-
-    // Hash the new password
-    const newPasswordHash = await this.passwords.hash(newPassword);
-
-    // Update the password hash and revoke all existing sessions for the user in a transaction
-    await this.prisma.$transaction([
-      this.prisma.emailAccount.update({
-        where: { userId: resetToken.userId },
-        data: { passwordHash: newPasswordHash },
-      }),
-      this.prisma.session.updateMany({
-        where: { userId: resetToken.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      }),
-    ]);
-
-    await this.events.record("PASSWORD_RESET_COMPLETED", {
-      userId: resetToken.userId,
+      // Any other outstanding links for this user are no longer needed.
+      await tx.passwordResetToken.updateMany({ where: { userId: record.userId, usedAt: null }, data: { usedAt: now } });
+      await tx.emailAccount.update({ where: { userId: record.userId }, data: { passwordHash }, select: { id: true } });
+      const sessions = await tx.session.updateMany({
+        where: { userId: record.userId, revokedAt: null },
+        data: { revokedAt: now },
+      });
+      return sessions.count;
     });
+    if (revokedSessions === null) return this.failReset(client, "invalid_token", record.userId);
 
-    return {
-      userId: resetToken.userId,
-      userNumber: resetToken.user.userNumber,
-    };
+    await this.events.record("PASSWORD_RESET_COMPLETED", { userId: record.userId, client, metadata: { revokedSessions } });
+  }
+
+  private async failReset(client: ClientInfo, reason: string, userId?: string): Promise<never> {
+    await this.events.record("PASSWORD_RESET_FAILED", { userId, client, metadata: { reason } });
+    throw new ApiError(HttpStatus.BAD_REQUEST, "PASSWORD_RESET_INVALID", "This password reset link is invalid or has expired.");
   }
 }

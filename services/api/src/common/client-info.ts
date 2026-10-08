@@ -7,6 +7,14 @@ export interface ClientInfo {
   userAgent: string | undefined;
 }
 
+/**
+ * Request path without the query string. Used wherever a path is logged or echoed, because query
+ * strings can carry one-time secrets (e.g. the OAuth `code` and `state` on the Google callback).
+ */
+export function requestPath(req: Request): string {
+  return req.originalUrl.split("?")[0] ?? "";
+}
+
 export function clientInfo(req: Request): ClientInfo {
   return {
     ip: req.ip,

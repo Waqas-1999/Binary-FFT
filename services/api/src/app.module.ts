@@ -3,10 +3,11 @@ import { AuthModule } from "./auth/auth.module.ts";
 import { ConfigModule } from "./config/config.module.ts";
 import { DatabaseModule } from "./database/database.module.ts";
 import { HealthModule } from "./health/health.module.ts";
+import { ProfileModule } from "./profile/profile.module.ts";
 import { RateLimitModule } from "./rate-limit/rate-limit.module.ts";
 import { RedisModule } from "./redis/redis.module.ts";
 
 @Module({
-  imports: [ConfigModule, DatabaseModule, RedisModule, RateLimitModule, HealthModule, AuthModule],
+  imports: [ConfigModule, DatabaseModule, RedisModule, RateLimitModule, HealthModule, AuthModule, ProfileModule],
 })
 export class AppModule {}

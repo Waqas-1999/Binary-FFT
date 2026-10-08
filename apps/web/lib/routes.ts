@@ -19,6 +19,7 @@ export const authRoutes = {
   login: "/login",
   verifyEmail: "/verify-email",
   forgotPassword: "/forgot-password",
+  resetPassword: "/reset-password",
 } as const;
 
 /** True when `href` is the current page or one of its sub-pages. */

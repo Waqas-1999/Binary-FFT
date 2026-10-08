@@ -12,3 +12,5 @@ export function toValidationIssues(error: z.ZodError): ValidationIssue[] {
 }
 
 export * from "./auth.ts";
+
+export * from "./profile.ts";

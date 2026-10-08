@@ -1,8 +1,15 @@
-import { type CanActivate, type ExecutionContext, HttpStatus } from "@nestjs/common";
+import { type CanActivate, type ExecutionContext, HttpStatus, SetMetadata } from "@nestjs/common";
 import type { Request } from "express";
 import { ApiError } from "./api-error.ts";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const SKIP_ORIGIN_CHECK = "skipOriginCheck";
+
+/**
+ * Exempts one route from the browser-origin check. Only for server-to-server callbacks that carry no
+ * cookies and prove who they are another way (e.g. the Telegram webhook's secret header).
+ */
+export const SkipOriginCheck = () => SetMetadata(SKIP_ORIGIN_CHECK, true);
 
 /**
  * CSRF protection for cookie authentication, together with SameSite=Lax cookies:
@@ -15,6 +22,7 @@ export class OriginGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     if (SAFE_METHODS.has(req.method)) return true;
+    if (Reflect.getMetadata(SKIP_ORIGIN_CHECK, context.getHandler()) === true) return true;
 
     if (!this.allowedOrigins.includes(requestOrigin(req) ?? "")) {
       throw new ApiError(HttpStatus.FORBIDDEN, "FORBIDDEN_ORIGIN", "Request origin is not allowed");

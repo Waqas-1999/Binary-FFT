@@ -1,76 +1,74 @@
-import { Injectable, Logger } from "@nestjs/common";
-import { generateToken, hashToken } from "../tokens.ts";
+import { Injectable } from "@nestjs/common";
+import type { OAuthProvider } from "../../generated/prisma/client.js";
 import { RedisService } from "../../redis/redis.service.ts";
+import { authConfig } from "../auth.config.ts";
+import { generateToken, hashToken } from "../tokens.ts";
 
-export type OAuthStateType = "login" | "link";
+/** What a started OAuth flow wants to do when Google redirects back. */
+export type OAuthPurpose = "login" | "link" | "reauth";
 
-export interface OAuthState {
-  state: string;
-  stateHash: string;
-  expiresAt: Date;
+/** Server-side context of one OAuth attempt. Never sent to the browser. */
+export interface OAuthFlow {
+  provider: OAuthProvider;
+  purpose: OAuthPurpose;
+  /** The signed-in user who started a link flow; null for sign-in. */
+  userId: string | null;
+  /** PKCE verifier; the matching challenge went to Google. */
+  codeVerifier: string;
+  /** Must come back unchanged inside Google's ID token. */
+  nonce: string;
+  /** Allowlisted internal path to land on after sign-in. */
+  returnTo: string;
+  /** SHA-256 of the cookie value that ties this flow to the browser that started it. */
+  bindingHash: string;
 }
 
+export interface StartedOAuthFlow {
+  /** Goes to Google as the `state` parameter. */
+  state: string;
+  /** Goes to the browser in an HttpOnly cookie; the callback must present it. */
+  binding: string;
+  codeVerifier: string;
+  nonce: string;
+}
+
+const KEY_PREFIX = "oauth:state:";
+
 /**
- * Short-lived, single-use OAuth state. Stored in Redis so it is:
- * - cryptographically random (256-bit)
- * - bound to the browser/session that initiated the flow
- * - single-use: consumed on the first callback
- * - short-lived: 1 hour
+ * Short-lived, single-use OAuth state in Redis. Only the hash of the state is a key, so a Redis
+ * dump does not reveal values that are still redeemable. Consuming is one atomic GETDEL, so a
+ * replayed or concurrent callback cannot use the same state twice. Redis errors propagate and
+ * the callers fail closed.
  */
 @Injectable()
 export class OAuthStateService {
-  private readonly logger = new Logger(OAuthStateService.name);
-  private readonly prefix = "oauth-state:";
-
   constructor(private readonly redis: RedisService) {}
 
-  /** Creates and stores a new state value for the given type and optional userId. */
-  async create(type: OAuthStateType, userId?: string): Promise<string> {
+  async start(flow: Pick<OAuthFlow, "provider" | "purpose" | "userId" | "returnTo">): Promise<StartedOAuthFlow> {
     const state = generateToken();
-    const stateHash = hashToken(state);
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-    const value = JSON.stringify({ type, userId: userId ?? null, expiresAt: expiresAt.toISOString() });
-    await this.redis.client.set(`${this.prefix}${stateHash}`, value, "EX", 60 * 60);
-    return state;
+    const binding = generateToken();
+    const codeVerifier = generateToken();
+    const nonce = generateToken();
+    const stored: OAuthFlow = { ...flow, codeVerifier, nonce, bindingHash: hashToken(binding) };
+    await this.redis.client.set(
+      KEY_PREFIX + hashToken(state),
+      JSON.stringify(stored),
+      "EX",
+      authConfig.oAuthStateTtlSeconds,
+    );
+    return { state, binding, codeVerifier, nonce };
   }
 
   /**
-   * Validates and consumes the state. Returns the parsed state data if valid.
-   * Throws if the state is unknown, expired, already consumed, or has a type mismatch.
+   * Returns the flow for a state if it exists, has not expired or been used, and was started by the
+   * browser presenting `binding`. The state is consumed even when the binding does not match, so a
+   * leaked state value cannot be retried.
    */
-  async consume(state: string, expectedType: OAuthStateType, expectedUserId?: string): Promise<{ type: OAuthStateType; userId: string | null }> {
-    const stateHash = hashToken(state);
-    const key = `${this.prefix}${stateHash}`;
-    const stored = await this.redis.client.get(key);
-    if (!stored) {
-      throw new Error("Invalid or consumed OAuth state");
-    }
+  async consume(state: string, binding: string | undefined): Promise<OAuthFlow | null> {
+    const raw = await this.redis.client.getdel(KEY_PREFIX + hashToken(state));
+    if (!raw || !binding) return null;
 
-    // Single-use: delete immediately before processing
-    await this.redis.client.del(key);
-
-    const data = JSON.parse(stored) as { type: OAuthStateType; userId: string | null; expiresAt: string };
-
-    if (data.expiresAt && new Date(data.expiresAt).getTime() <= Date.now()) {
-      throw new Error("Expired OAuth state");
-    }
-    if (data.type !== expectedType) {
-      throw new Error("OAuth state type mismatch");
-    }
-    if (expectedUserId && data.userId !== expectedUserId) {
-      throw new Error("OAuth state user mismatch");
-    }
-
-    return { type: data.type, userId: data.userId };
-  }
-
-  /** Best-effort cleanup of stale state entries. Never throws. */
-  async cleanup(): Promise<void> {
-    try {
-      const keys = await this.redis.client.keys(`${this.prefix}*`);
-      if (keys.length > 0) await this.redis.client.del(keys);
-    } catch (error) {
-      this.logger.warn(`OAuth state cleanup failed: ${error}`);
-    }
+    const flow = JSON.parse(raw) as OAuthFlow;
+    return flow.bindingHash === hashToken(binding) ? flow : null;
   }
 }

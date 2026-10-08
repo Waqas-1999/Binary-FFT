@@ -3,13 +3,14 @@ import type { Request } from "express";
 import { describe, expect, it, vi } from "vitest";
 import { readCookie } from "../common/client-info.ts";
 import { OriginGuard } from "../common/origin.guard.ts";
+import { challengeCookieName, sessionCookieName } from "./auth.config.ts";
 import { AuthGuard } from "./auth.guard.ts";
 import { PasswordService } from "./password.service.ts";
 import type { SessionService } from "./session.service.ts";
 import { generateToken, hashToken } from "./tokens.ts";
 
 function httpContext(req: Partial<Request>): ExecutionContext {
-  return { switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
+  return { switchToHttp: () => ({ getRequest: () => req }), getHandler: () => function handler() {} } as unknown as ExecutionContext;
 }
 
 function request(headers: Record<string, string>, method = "POST"): Partial<Request> {
@@ -91,5 +92,14 @@ describe("readCookie", () => {
     const req = request({ cookie: "xsession=nope; session=abc%2D1; other=1" }) as Request;
     expect(readCookie(req, "session")).toBe("abc-1");
     expect(readCookie(req, "missing")).toBeUndefined();
+  });
+});
+
+describe("cookie names", () => {
+  it("uses the __Host- prefix for the session and login-challenge cookies in production only", () => {
+    expect(sessionCookieName(true)).toBe("__Host-session");
+    expect(challengeCookieName(true)).toBe("__Host-login-challenge");
+    expect(sessionCookieName(false)).toBe("session");
+    expect(challengeCookieName(false)).toBe("login-challenge");
   });
 });

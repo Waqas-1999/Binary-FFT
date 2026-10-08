@@ -1,6 +1,10 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+/** Fake values used only in tests; the tests assert they never leak into responses, logs or events. */
+export const TEST_TELEGRAM_TOKEN = "123456789:TEST-bot-token-do-not-use-0123456789";
+export const TEST_TELEGRAM_WEBHOOK_SECRET = "test-webhook-secret-0123456789abcdef";
+
 export const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
 /**
@@ -26,5 +30,11 @@ export function integrationTestEnv(): Record<string, string> {
     WEB_APP_URL: "http://localhost:3000",
     API_CORS_ORIGINS: "",
     LOG_LEVEL: "log",
+    // A fixed key that only ever protects throwaway test secrets.
+    TWO_FACTOR_ENCRYPTION_KEY: Buffer.alloc(32, 0x42).toString("base64"),
+    // Throwaway Telegram settings; the real client is replaced by a fake in the test app.
+    TELEGRAM_BOT_TOKEN: TEST_TELEGRAM_TOKEN,
+    TELEGRAM_BOT_USERNAME: "binery_test_bot",
+    TELEGRAM_WEBHOOK_SECRET: TEST_TELEGRAM_WEBHOOK_SECRET,
   };
 }

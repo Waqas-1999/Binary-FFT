@@ -15,7 +15,7 @@ function Status() {
   return <p>{auth.status === "authenticated" ? `signed in as ${auth.user.userNumber}` : auth.status}</p>;
 }
 
-const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true };
+const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true, googleConnected: false };
 
 beforeEach(() => resetAuthForTests());
 afterEach(() => {

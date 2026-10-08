@@ -8,7 +8,7 @@ export interface EmailMessage {
   text: string;
 }
 
-export type EmailOperation = "verification_email" | "account_exists_email" | "reset_password_email";
+export type EmailOperation = "verification_email" | "account_exists_email" | "reset_password_email" | "security_notice";
 
 /** Email delivery provider. */
 export interface EmailSender {

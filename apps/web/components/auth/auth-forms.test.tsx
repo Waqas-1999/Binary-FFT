@@ -66,7 +66,7 @@ describe("LoginForm", () => {
   });
 
   it("signs in and continues to the app", async () => {
-    const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true };
+    const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true, googleConnected: false };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(200, { user })));
     render(<LoginForm />);
 

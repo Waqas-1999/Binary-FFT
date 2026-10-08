@@ -8,6 +8,7 @@ import { useState } from "react";
 import { api, ApiRequestError, errorMessage } from "../../lib/api";
 import { authRoutes } from "../../lib/routes";
 import { AuthHeading, type FieldErrors, fieldErrorsFrom, FormAlert } from "./form";
+import { GoogleSignIn } from "./google-button";
 import { ResendVerification } from "./resend-verification";
 
 export function SignupForm() {
@@ -96,6 +97,7 @@ export function SignupForm() {
       <Button type="submit" size="lg" fullWidth loading={submitting}>
         Create account
       </Button>
+      <GoogleSignIn />
       <p className="text-center text-body-small text-text-secondary">
         Already have an account?{" "}
         <Link href={authRoutes.login} className="focus-ring rounded-sm font-semibold text-brand hover:text-brand-hover">

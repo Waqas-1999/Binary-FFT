@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VerifyEmail } from "./verify-email";
 
 const verificationToken = "A".repeat(43);
-const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true };
+const user = { userNumber: 10000, email: "alex@example.com", emailVerified: true, googleConnected: false };
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
